@@ -83,11 +83,11 @@ pytest -v
 <!-- builder:roadmap:start -->
 ## Status
 
-**In active development:** 0 of 3 milestones done.
+**In active development:** 1 of 3 milestones done.
 
 ## Roadmap
 
-- [ ] **Distance Metrics and Exact Flat Index Baseline**: Implement vectorized Euclidean and Cosine distance metrics, an exact BruteForceIndex with top-k retrieval, and unit tests validating search correctness.
+- [x] **Distance Metrics and Exact Flat Index Baseline**: Implement vectorized Euclidean and Cosine distance metrics, an exact BruteForceIndex with top-k retrieval, and unit tests validating search correctness.
 - [ ] **Random Projection Trees and Forest Builder**: Implement recursive hyperplane partitioning to construct balanced binary RP-trees, multi-tree forest orchestration, and deterministic random seeding.
 - [ ] **Candidate Search, Persistence, and Benchmark Harness**: Implement multi-tree leaf aggregation with configurable search budgets, binary disk persistence, and a reproducible CLI benchmark reporting recall and latency tradeoffs.
 <!-- builder:roadmap:end -->
