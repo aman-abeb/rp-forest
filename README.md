@@ -155,11 +155,17 @@ pytest -v
 <!-- builder:roadmap:start -->
 ## Status
 
-**In active development:** 2 of 3 milestones done.
+**Complete.** RPForest is an approximate nearest neighbor search index built from scratch using NumPy and random projection trees. It features multi-tree leaf aggregation, configurable search budgets, binary disk persistence, and an ASCII recall-vs-latency CLI benchmark.
 
 ## Roadmap
 
 - [x] **Distance Metrics and Exact Flat Index Baseline**: Implement vectorized Euclidean and Cosine distance metrics, an exact BruteForceIndex with top-k retrieval, and unit tests validating search correctness.
 - [x] **Random Projection Trees and Forest Builder**: Implement recursive hyperplane partitioning to construct balanced binary RP-trees, multi-tree forest orchestration, and deterministic random seeding.
-- [ ] **Candidate Search, Persistence, and Benchmark Harness**: Implement multi-tree leaf aggregation with configurable search budgets, binary disk persistence, and a reproducible CLI benchmark reporting recall and latency tradeoffs.
+- [x] **Candidate Search, Persistence, and Benchmark Harness**: Implement multi-tree leaf aggregation with configurable search budgets, binary disk persistence, and a reproducible CLI benchmark reporting recall and latency tradeoffs.
+
+## Ideas for future work
+
+- Add AVX2/SIMD acceleration or Numba JIT compilation for distance computation bottlenecks
+- Support dynamic incremental vector insertions and tree rebalancing without full index rebuilds
+- Implement product quantization (PQ) or scalar quantization to compress in-memory vector storage
 <!-- builder:roadmap:end -->
