@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from pathlib import Path
+from typing import BinaryIO
 import numpy as np
 
 from rpforest.metrics import Metric, pairwise_distances
@@ -74,6 +75,29 @@ class RPForest:
         """Return the dimensionality of stored vectors."""
         return 0 if self._data is None else self._data.shape[1]
 
+    @staticmethod
+    def _resolve_budget(
+        search_budget: int | None,
+        max_candidates: int | None,
+    ) -> int | None:
+        """Validate and resolve search_budget and max_candidates parameters."""
+        if search_budget is not None and max_candidates is not None:
+            if search_budget != max_candidates:
+                raise ValueError(
+                    f"Conflicting search budget arguments: search_budget={search_budget} "
+                    f"and max_candidates={max_candidates}"
+                )
+            budget = search_budget
+        elif search_budget is not None:
+            budget = search_budget
+        else:
+            budget = max_candidates
+
+        if budget is not None and budget <= 0:
+            raise ValueError(f"search_budget / max_candidates must be positive, got {budget}")
+
+        return budget
+
     def fit(self, X: np.ndarray) -> RPForest:
         """Fit the forest index by building n_trees on data matrix X.
 
@@ -119,24 +143,27 @@ class RPForest:
         self,
         q: np.ndarray,
         search_budget: int | None = None,
+        max_candidates: int | None = None,
     ) -> np.ndarray:
         """Retrieve candidate sample indices for query vector q across all trees.
 
         Aggregates indices from the leaf of each tree containing q. If search_budget
-        is provided and candidate count exceeds it, candidates are ranked by their
-        co-occurrence frequency across trees and truncated to search_budget.
+        (or max_candidates) is provided, candidates are ranked by their co-occurrence
+        frequency across visited leaves and truncated to the budget.
 
         Parameters
         ----------
         q : np.ndarray
             Query vector of shape (dimension,) or (1, dimension).
         search_budget : int | None, default=None
-            Maximum number of candidates to evaluate. If None, all unique candidates are kept.
+            Maximum number of candidates to evaluate.
+        max_candidates : int | None, default=None
+            Synonym for search_budget.
 
         Returns
         -------
         np.ndarray
-            1D array of unique candidate sample indices.
+            1D array of candidate sample indices.
         """
         if not self.is_fitted or self._data is None:
             raise RuntimeError("RPForest must be fitted before retrieving candidates.")
@@ -147,6 +174,8 @@ class RPForest:
                 f"Query dimension {len(query_vec)} does not match index {self.dimension}"
             )
 
+        budget = self._resolve_budget(search_budget, max_candidates)
+
         # Collect leaves from all trees
         all_candidates: list[int] = []
         for tree in self.trees:
@@ -156,22 +185,22 @@ class RPForest:
         if not all_candidates:
             return np.array([], dtype=np.int64)
 
-        if search_budget is not None and search_budget > 0:
-            # Frequency-weighted candidate prioritization
-            counts = Counter(all_candidates)
-            # Sort primarily by frequency (descending), secondarily by index (ascending)
-            sorted_by_freq = sorted(counts.keys(), key=lambda idx: (-counts[idx], idx))
-            selected = sorted_by_freq[:search_budget]
+        # Frequency-weighted candidate ranking
+        counts = Counter(all_candidates)
+        sorted_by_freq = sorted(counts.keys(), key=lambda idx: (-counts[idx], idx))
+
+        if budget is not None:
+            selected = sorted_by_freq[:budget]
             return np.array(selected, dtype=np.int64)
 
-        # Unbounded budget: return unique indices
-        return np.unique(all_candidates).astype(np.int64)
+        return np.array(sorted_by_freq, dtype=np.int64)
 
     def query(
         self,
         q: np.ndarray,
         k: int = 10,
         search_budget: int | None = None,
+        max_candidates: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Query the forest for top-k approximate nearest neighbors.
 
@@ -182,12 +211,14 @@ class RPForest:
         k : int, default=10
             Number of nearest neighbors to retrieve.
         search_budget : int | None, default=None
-            Candidate budget cap. If None, all candidates from matching leaves are evaluated.
+            Maximum candidate budget cap. Limits exact distance evaluations.
+        max_candidates : int | None, default=None
+            Synonym for search_budget.
 
         Returns
         -------
         indices : np.ndarray
-            1D array of length min(k, n_samples) containing retrieved neighbor indices.
+            1D array of neighbor indices.
         distances : np.ndarray
             1D array of distances corresponding to each retrieved neighbor.
         """
@@ -208,26 +239,33 @@ class RPForest:
                 f"Query dimension {query_vec.shape[1]} does not match index {self.dimension}"
             )
 
+        budget = self._resolve_budget(search_budget, max_candidates)
         k_actual = min(k, self.n_samples)
-        candidates = self.get_candidates(query_vec[0], search_budget=search_budget)
+        candidates = self.get_candidates(query_vec[0], search_budget=budget)
 
-        # Ensure we have at least k_actual candidates if available
-        if len(candidates) < k_actual:
-            missing = k_actual - len(candidates)
+        # If candidate pool is smaller than k_actual and budget is None or budget >= k_actual,
+        # backfill from remaining samples to fulfill k
+        max_allowed = k_actual if budget is None else min(k_actual, budget)
+        if len(candidates) < max_allowed:
+            missing = max_allowed - len(candidates)
             candidate_set = set(candidates.tolist())
             all_indices = np.arange(self.n_samples, dtype=np.int64)
             remaining = [idx for idx in all_indices if idx not in candidate_set]
             candidates = np.concatenate([candidates, remaining[:missing]])
 
-        # Compute exact distances against candidate pool
+        if len(candidates) == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float64)
+
+        # Compute exact distances exclusively against candidate pool
         cand_vectors = self._data[candidates]
         dists = pairwise_distances(query_vec, cand_vectors, metric=self.metric)[0]
 
-        # Find top k_actual among candidates
-        if len(candidates) <= k_actual:
+        # Find top k_out among evaluated candidates
+        k_out = min(k_actual, len(candidates))
+        if len(candidates) <= k_out:
             sort_idx = np.argsort(dists)
         else:
-            part_idx = np.argpartition(dists, k_actual - 1)[:k_actual]
+            part_idx = np.argpartition(dists, k_out - 1)[:k_out]
             part_dists = dists[part_idx]
             sort_idx = part_idx[np.argsort(part_dists)]
 
@@ -238,6 +276,7 @@ class RPForest:
         queries: np.ndarray,
         k: int = 10,
         search_budget: int | None = None,
+        max_candidates: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Query the forest with multiple query vectors.
 
@@ -249,16 +288,21 @@ class RPForest:
             Number of nearest neighbors to retrieve per query.
         search_budget : int | None, default=None
             Candidate budget cap per query.
+        max_candidates : int | None, default=None
+            Synonym for search_budget.
 
         Returns
         -------
         indices : np.ndarray
-            2D array of shape (n_queries, min(k, n_samples)).
+            2D array of retrieved neighbor indices.
         distances : np.ndarray
-            2D array of shape (n_queries, min(k, n_samples)).
+            2D array of neighbor distances.
         """
         if not self.is_fitted or self._data is None:
             raise RuntimeError("RPForest must be fitted before querying.")
+
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
 
         queries_mat = np.asarray(queries, dtype=np.float64)
         if queries_mat.ndim == 1:
@@ -266,18 +310,54 @@ class RPForest:
         elif queries_mat.ndim != 2:
             raise ValueError(f"queries must be 1D or 2D array, got ndim={queries_mat.ndim}")
 
-        n_queries = queries_mat.shape[0]
-        k_actual = min(k, self.n_samples)
+        if queries_mat.shape[1] != self.dimension:
+            raise ValueError(
+                f"Query dimension {queries_mat.shape[1]} does not match index {self.dimension}"
+            )
 
-        out_indices = np.empty((n_queries, k_actual), dtype=np.int64)
-        out_dists = np.empty((n_queries, k_actual), dtype=np.float64)
+        budget = self._resolve_budget(search_budget, max_candidates)
+        n_queries = queries_mat.shape[0]
+        k_effective = min(k, self.n_samples) if budget is None else min(k, self.n_samples, budget)
+
+        out_indices = np.empty((n_queries, k_effective), dtype=np.int64)
+        out_dists = np.empty((n_queries, k_effective), dtype=np.float64)
 
         for i in range(n_queries):
-            idx, dist = self.query(queries_mat[i], k=k_actual, search_budget=search_budget)
+            idx, dist = self.query(queries_mat[i], k=k, search_budget=budget)
             out_indices[i] = idx
             out_dists[i] = dist
 
         return out_indices, out_dists
+
+    def save(self, file_or_path: str | Path | BinaryIO) -> None:
+        """Save the fitted forest index to disk or a binary stream.
+
+        Parameters
+        ----------
+        file_or_path : str | Path | BinaryIO
+            Destination file path or writable binary stream.
+        """
+        from rpforest.serialization import save_forest
+
+        save_forest(self, file_or_path)
+
+    @classmethod
+    def load(cls, file_or_path: str | Path | BinaryIO) -> RPForest:
+        """Load a fitted RPForest index from disk or a binary stream.
+
+        Parameters
+        ----------
+        file_or_path : str | Path | BinaryIO
+            Source file path or readable binary stream.
+
+        Returns
+        -------
+        RPForest
+            Reconstructed and fitted RPForest index.
+        """
+        from rpforest.serialization import load_forest
+
+        return load_forest(file_or_path)
 
 
 # Canonical alias

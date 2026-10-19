@@ -8,6 +8,7 @@ from rpforest.metrics import (
     euclidean_distances,
     pairwise_distances,
 )
+from rpforest.serialization import load_forest, save_forest
 from rpforest.tree import RPNode, RPTree
 
 __version__ = "0.1.0"
@@ -20,5 +21,7 @@ __all__ = [
     "RandomProjectionForest",
     "cosine_distances",
     "euclidean_distances",
+    "load_forest",
     "pairwise_distances",
+    "save_forest",
 ]
