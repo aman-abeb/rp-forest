@@ -239,16 +239,11 @@ class RPTree:
 
         curr = self.root
         while not curr.is_leaf:
-            assert curr.hyperplane is not None and curr.split_val is not None
-            proj = float(np.dot(query_vec, curr.hyperplane))
-            if proj <= curr.split_val:
-                assert curr.left is not None
+            if np.dot(query_vec, curr.hyperplane) <= curr.split_val:
                 curr = curr.left
             else:
-                assert curr.right is not None
                 curr = curr.right
 
-        assert curr.indices is not None
         return curr.indices
 
     def get_all_leaves(self) -> list[RPNode]:

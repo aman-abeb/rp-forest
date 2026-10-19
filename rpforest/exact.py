@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from rpforest.metrics import Metric, pairwise_distances
+from rpforest.metrics import Metric
 
 
 class BruteForceIndex:
@@ -89,6 +89,9 @@ class BruteForceIndex:
         if not self.is_fitted or self._data is None:
             raise RuntimeError("Index must be fitted before querying.")
 
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
+
         query_mat = np.asarray(q, dtype=np.float64)
         if query_mat.ndim == 1:
             query_mat = query_mat.reshape(1, -1)
@@ -102,8 +105,28 @@ class BruteForceIndex:
                 f"Query feature dimension {query_mat.shape[1]} does not match index {self.dimension}"
             )
 
-        indices_batch, dists_batch = self.batch_query(query_mat, k=k)
-        return indices_batch[0], dists_batch[0]
+        qv = query_mat[0]
+        if self.metric == "euclidean":
+            diff = self._data - qv
+            dists = np.sqrt(np.sum(diff * diff, axis=1))
+        elif self.metric == "cosine":
+            q_norm = float(np.linalg.norm(qv))
+            data_norms = np.linalg.norm(self._data, axis=1)
+            if q_norm < 1e-15:
+                dists = np.where(data_norms < 1e-15, 0.0, 1.0)
+            else:
+                safe_data = np.where(data_norms < 1e-15, 1.0, data_norms)
+                sim = np.dot(self._data, qv) / (safe_data * q_norm)
+                np.clip(sim, -1.0, 1.0, out=sim)
+                dists = 1.0 - sim
+                dists[data_norms < 1e-15] = 1.0
+        else:
+            raise ValueError(f"Unsupported metric '{self.metric}'.")
+
+        sorted_idx = np.argsort(dists)
+        k_actual = min(k, self.n_samples)
+        top_k_idx = sorted_idx[:k_actual]
+        return top_k_idx, dists[top_k_idx]
 
     def batch_query(
         self,
@@ -143,24 +166,15 @@ class BruteForceIndex:
                 f"Query dimension {queries_mat.shape[1]} does not match index {self.dimension}"
             )
 
-        n_samples = self.n_samples
-        k_actual = min(k, n_samples)
+        n_queries = queries_mat.shape[0]
+        k_actual = min(k, self.n_samples)
 
-        # Compute full distance matrix (n_queries, n_samples)
-        dists = pairwise_distances(queries_mat, self._data, metric=self.metric)
+        out_indices = np.empty((n_queries, k_actual), dtype=np.int64)
+        out_dists = np.empty((n_queries, k_actual), dtype=np.float64)
 
-        if k_actual == n_samples:
-            # Sort all samples
-            sorted_idx = np.argsort(dists, axis=1)
-        else:
-            # Efficient top-k partition then sort the top-k subset
-            part_idx = np.argpartition(dists, k_actual - 1, axis=1)[:, :k_actual]
-            row_idx = np.arange(queries_mat.shape[0])[:, None]
-            part_dists = dists[row_idx, part_idx]
-            sort_within_topk = np.argsort(part_dists, axis=1)
-            sorted_idx = part_idx[row_idx, sort_within_topk]
+        for i in range(n_queries):
+            idx, dst = self.query(queries_mat[i], k=k)
+            out_indices[i] = idx
+            out_dists[i] = dst
 
-        row_idx = np.arange(queries_mat.shape[0])[:, None]
-        sorted_dists = dists[row_idx, sorted_idx]
-
-        return sorted_idx, sorted_dists
+        return out_indices, out_dists
